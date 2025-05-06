@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto_agents"
+version = "0.1.0"
+description = "Multi-agent data-analysis & automation platform using AutoGen"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "User", email = "user@example.com"}
+]
+dependencies = [
+    "pyautogen>=0.2.0",
+    "playwright>=1.35.0",
+    "requests>=2.30.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "beautifulsoup4>=4.12.0",
+    "sqlalchemy>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["agents", "tools"]
+
+[tool.black]
+line-length = 88
+target-version = ["py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
