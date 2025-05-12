@@ -5,7 +5,10 @@ Web Scraper Tool - Provides functionality for extracting data from websites.
 from typing import Any, Dict, List, Optional, Union
 import logging
 import time
-from urllib.parse import urlparse
+import json
+import urllib
+from urllib.parse import urlparse, quote_plus
+import urllib.request
 
 import requests
 from bs4 import BeautifulSoup
@@ -24,6 +27,7 @@ class WebScraperTool:
     2. HTML parsing and extraction using BeautifulSoup
     3. Structured data extraction from web pages
     4. Rate limiting and retry functionality
+    5. Web search capabilities via search engines
     """
 
     def __init__(
@@ -44,7 +48,11 @@ class WebScraperTool:
         self.request_delay = request_delay
         self.max_retries = max_retries
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": self.user_agent})
+        self.session.headers.update({
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5"
+        })
         self.last_request_time = 0
     
     def _respect_rate_limit(self):
@@ -177,6 +185,157 @@ class WebScraperTool:
                 rows.append(row)
                 
         return rows
+    
+    def search_web(self, query: str, num_results: int = 5) -> List[Dict[str, str]]:
+        """
+        Search the web for the given query using DuckDuckGo.
+        
+        Args:
+            query: Search query
+            num_results: Number of results to return
+            
+        Returns:
+            List of dictionaries with title, snippet, and url
+        """
+        logger.info(f"Searching web for: {query}")
+        
+        # Using DuckDuckGo lite for searching (no JavaScript required)
+        search_url = f"https://lite.duckduckgo.com/lite"
+        
+        try:
+            # Format the query parameters
+            params = {
+                'q': query,
+                'kl': 'us-en'  # Region and language
+            }
+            
+            # Make the search request
+            self._respect_rate_limit()
+            response = self.session.post(search_url, data=params, timeout=30)
+            response.raise_for_status()
+            
+            # Parse the response
+            soup = self.parse_html(response.text)
+            
+            # Extract search results
+            results = []
+            
+            # DuckDuckGo lite uses a specific table structure
+            for tr in soup.select("tr.result-link"):
+                try:
+                    title_el = tr.select_one("td > a")
+                    if not title_el:
+                        continue
+                        
+                    title = title_el.get_text(strip=True)
+                    url = title_el.get("href")
+                    
+                    # Get the snippet from the next row
+                    snippet_tr = tr.find_next_sibling("tr")
+                    if snippet_tr:
+                        snippet_td = snippet_tr.select_one("td.result-snippet")
+                        if snippet_td:
+                            snippet = snippet_td.get_text(strip=True)
+                        else:
+                            snippet = ""
+                    else:
+                        snippet = ""
+                    
+                    results.append({
+                        "title": title,
+                        "snippet": snippet,
+                        "url": url
+                    })
+                    
+                    if len(results) >= num_results:
+                        break
+                except Exception as e:
+                    logger.warning(f"Error parsing search result: {e}")
+                    continue
+            
+            logger.info(f"Found {len(results)} search results")
+            
+            return results
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+            
+            # Return an empty list on error
+            return []
+    
+    def search_and_scrape(self, query: str, max_pages: int = 3) -> Dict[str, Any]:
+        """
+        Search for query and scrape the top results.
+        
+        Args:
+            query: Search query
+            max_pages: Maximum number of pages to scrape
+            
+        Returns:
+            Dictionary with search results and scraped content
+        """
+        logger.info(f"Performing search and scrape for query: {query}")
+        
+        # First, search the web
+        search_results = self.search_web(query, num_results=max_pages)
+        
+        # Then scrape each result
+        scraped_data = []
+        
+        for result in search_results:
+            url = result.get("url")
+            if not url:
+                continue
+                
+            logger.info(f"Scraping search result: {url}")
+            
+            try:
+                html = self.fetch_page(url)
+                if not html:
+                    logger.warning(f"Failed to fetch page: {url}")
+                    continue
+                    
+                soup = self.parse_html(html)
+                
+                # Extract main content - try different selectors for main content
+                content = []
+                
+                # Try article content first
+                article_selectors = ["article", "main", ".post-content", ".entry-content", "#content", "#main"]
+                for selector in article_selectors:
+                    elements = soup.select(selector)
+                    if elements:
+                        # Extract paragraphs from the first matching element
+                        paragraphs = elements[0].find_all("p")
+                        content = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+                        break
+                
+                # If no content found with article selectors, just get all paragraphs
+                if not content:
+                    paragraphs = soup.find_all("p")
+                    content = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+                
+                # Extract title
+                title = result.get("title", "")
+                if not title and soup.title:
+                    title = soup.title.get_text(strip=True)
+                
+                # Add to scraped data
+                scraped_data.append({
+                    "url": url,
+                    "title": title,
+                    "content": content,
+                    "snippet": result.get("snippet", "")
+                })
+            except Exception as e:
+                logger.error(f"Error scraping {url}: {e}")
+                continue
+        
+        return {
+            "query": query,
+            "results": search_results,
+            "scraped_data": scraped_data,
+            "timestamp": time.time()
+        }
     
     def scrape_page(self, url: str, extraction_rules: Dict[str, Any]) -> Dict[str, Any]:
         """

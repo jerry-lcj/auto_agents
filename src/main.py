@@ -9,7 +9,21 @@ from typing import Any, Dict, List, Optional, Union
 import asyncio
 import threading
 
-import autogen
+# Try to handle imports correctly regardless of how the script is called
+try:
+    # Try direct imports first - newer AutoGen version
+    from autogen.agentchat.assistant import AssistantAgent
+    from autogen.agentchat.user_proxy import UserProxyAgent
+    from autogen.oai import OpenAIWrapper
+except ImportError:
+    # Fall back to autogen_agentchat - older versions or different package name
+    try:
+        from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
+        from autogen_ext.models.openai import OpenAIChatCompletionClient as OpenAIWrapper
+    except ImportError:
+        # If still failing, raise a helpful error
+        raise ImportError("Could not import AutoGen components. Please ensure AutoGen is installed correctly.")
+
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -62,11 +76,19 @@ class MultiAgentManager:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             logger.warning("OPENAI_API_KEY not found in environment variables. LLM functionality may be limited.")
-            
-        self.llm_config = llm_config or {
-            "config_list": [{"model": "gpt-4-turbo", "api_key": api_key}],
+        
+        # Prepare configuration for LLM
+        client_config = {
+            "api_key": api_key,
+            "model": "gpt-4-turbo",
             "temperature": 0.1,
         }
+        
+        # Override with any provided config
+        if llm_config:
+            client_config.update(llm_config)
+            
+        self.llm_config = client_config
 
         # Initialize the agent instances
         logger.info("Initializing agents...")
@@ -75,6 +97,17 @@ class MultiAgentManager:
         self.executor = ExecutorAgent(llm_config=self.llm_config)
         self.critic = CriticAgent(llm_config=self.llm_config)
         self.ui_tool = UIToolAgent(llm_config=self.llm_config)
+        
+        # Create a user proxy agent for interactive usage with flexible initialization 
+        try:
+            # Try newer AutoGen version approach
+            self.user_proxy = UserProxyAgent(name="user_proxy")
+        except (TypeError, ValueError):
+            # Fall back to a more basic approach for older versions
+            self.user_proxy = UserProxyAgent(
+                name="user_proxy",
+                human_input_mode="NEVER"
+            )
         
         # Initialize the MCP agent if enabled
         self.enable_mcp = enable_mcp
@@ -108,7 +141,16 @@ class MultiAgentManager:
     
     def _setup_agent_connections(self) -> None:
         """Set up connections and communication between agents."""
-        # TODO: Implement agent-to-agent connections
+        # In the new AutoGen API, we connect agents using register_reply
+        # This allows structured communication between agents
+        
+        # Example connection setup (to be expanded based on your workflow)
+        # self.user_proxy.register_reply(
+        #    [self.planner.agent],
+        #    lambda msg: True  # Accept all messages
+        # )
+        
+        # For now, we'll rely on the MultiAgentManager to coordinate
         pass
         
     def _start_mcp_server(self) -> None:
@@ -160,6 +202,43 @@ class MultiAgentManager:
             "result": result,
             "evaluation": evaluation,
         }
+    
+    def run_chat_task(self, task_description: str, **kwargs) -> Dict[str, Any]:
+        """
+        Execute a task using the AutoGen chat protocol.
+        
+        This uses a more basic approach that should be compatible with various AutoGen versions.
+        
+        Args:
+            task_description: Natural language description of the task
+            **kwargs: Additional task parameters
+            
+        Returns:
+            Dictionary containing chat results
+        """
+        logger.info(f"Starting chat task: {task_description}")
+        
+        try:
+            # In the current AutoGen version, we need to use the chat method
+            # The method returns a response that we can use directly
+            response = self.planner.agent.generate(task_description)
+            
+            # Get the final result and format it
+            result = {
+                "task": task_description,
+                "conversation": response.get("content", "No content received"),
+                "status": "success" 
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in chat task: {e}")
+            result = {
+                "task": task_description,
+                "conversation": f"Error: {str(e)}",
+                "status": "error"
+            }
+            
+        return result
         
     async def run_mcp_task(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -208,6 +287,12 @@ if __name__ == "__main__":
         "Analyze the trending topics on Twitter related to AI"
     )
     print("Regular task result:", result)
+    
+    # Run a new-style chat task
+    '''chat_result = manager.run_chat_task(
+        "Explain how multi-agent systems can improve data analysis workflows"
+    )
+    print("Chat task result:", chat_result)'''
     
     # Run an MCP task synchronously
     mcp_result = manager.run_mcp_task_sync(

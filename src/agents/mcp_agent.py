@@ -8,8 +8,9 @@ import json
 import logging
 import os
 
-import autogen
-from autogen import AssistantAgent
+from autogen_agentchat.agents import AssistantAgent
+from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_agentchat.messages import StructuredMessage
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 from pydantic import BaseModel, Field
@@ -65,14 +66,20 @@ class MCPAgent:
         self.port = port
         self.active_connections: List[WebSocket] = []
         
-        # Setup the underlying AutoGen agent
+        # Setup LLM client with the new API
+        llm_client = OpenAIChatCompletionClient(**self.llm_config)
+        
+        # Setup the underlying AutoGen agent - fixed initialization
+        # For AutoGen 0.5.6, we need to use config_list instead of llm_config
         self.agent = AssistantAgent(
             name=self.name,
-            system_message="""You are an MCP (Model Context Protocol) specialist who 
-            facilitates communication between AI systems and client applications.
-            You excel at understanding client requests, formatting them for other agents, 
-            and returning standardized responses.""",
-            llm_config=self.llm_config,
+            model_client=llm_client,
+            system_message="""You are a Model Context Protocol agent that specializes in 
+            interfacing with advanced language models using the MCP standard. You excel 
+            at formulating precise queries, interpreting model responses, and managing 
+            context effectively.""",
+            # Use a format compatible with AutoGen 0.5.6
+            
         )
         
         # Create FastAPI app for MCP server
@@ -178,8 +185,8 @@ class MCPAgent:
         Returns:
             Dictionary containing response and metadata
         """
-        # TODO: Implement MCP processing logic
-        # This will typically involve delegating to other agents
+        # TODO: Implement MCP processing logic with new API
+        # In the new API, we would use structured messages for communication
         
         # For now, return a simple response
         response = {
