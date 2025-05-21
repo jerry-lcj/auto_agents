@@ -8,6 +8,7 @@ import logging
 import importlib.util
 import sys
 from pathlib import Path
+import time
 
 # Try to handle imports correctly regardless of how the script is called
 try:
@@ -144,225 +145,210 @@ class RetrieverAgent:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Gather data according to the execution plan.
+        根据执行计划收集数据。
         
         Args:
-            plan: Execution plan from the planner
-            query: Optional search query to refine data collection
-            **kwargs: Additional parameters for data retrieval
+            plan: 来自规划者的执行计划
+            query: 可选搜索查询，用于优化数据收集
+            **kwargs: 用于数据检索的额外参数
             
         Returns:
-            Dictionary containing the collected data
+            包含收集数据的字典
         """
         try:
-            # Extract task from plan - handle different plan formats
+            import time
+            start_time = time.time()
+            # 从计划中提取任务 - 处理不同的计划格式
             task = plan
             if isinstance(plan, dict):
                 task = plan.get('task', plan)
             
-            # Convert task to string if it's an object
+            # 如果任务是对象，转换为字符串
             if not isinstance(task, str):
                 task = str(task)
                 
-            # Construct a retrieval prompt based on the plan
+            # 检测任务类型，为不同类型的任务添加专门的处理
+            task_lower = task.lower()
+            is_twitter_task = "twitter" in task_lower
+            is_social_media_task = is_twitter_task or any(kw in task_lower for kw in ["social media", "facebook", "instagram", "linkedin", "reddit", "tiktok"])
+            
+            # 基于计划构建检索提示，添加特定于任务类型的指导
             retrieval_prompt = f"""
-            Retrieve information based on the following plan and query:
+            基于以下计划和查询检索信息:
             
-            PLAN: {task}
-            QUERY: {query if query else 'No specific query provided'}
+            计划: {task}
+            查询: {query if query else '未提供特定查询'}
             
-            Focus on collecting relevant, high-quality data from appropriate sources.
-            Consider multiple data types and formats.
+            请关注收集相关、高质量的数据。
+            考虑多种数据类型和格式。
             """
             
-            # Get retrieval guidance - handle different OpenAIWrapper versions
+            # 为社交媒体任务添加特定提示
+            if is_social_media_task:
+                if is_twitter_task:
+                    retrieval_prompt += f"""
+                    这是一个关于Twitter的任务。请特别关注:
+                    1. Twitter上的趋势话题和标签
+                    2. 与AI相关的Twitter讨论
+                    3. 有影响力的AI相关Twitter账号
+                    4. Twitter上AI话题的参与度和情绪分析
+                    """
+                else:
+                    retrieval_prompt += f"""
+                    这是一个关于社交媒体的任务。请特别关注:
+                    1. 社交媒体平台上的趋势话题
+                    2. 与内容相关的用户参与度指标
+                    3. 跨平台的话题比较
+                    4. 情绪分析和用户反应
+                    """
+            
+            # 获取检索指导 - 处理不同的 OpenAIWrapper 版本
             retrieval_strategy = ""
             try:
-                # Try newer API style
+                # 尝试较新的 API 风格
                 response = self.llm_client.call(
                     messages=[{"role": "user", "content": retrieval_prompt}],
                     model=self.llm_config.get("model", "gpt-4-turbo")
                 )
                 retrieval_strategy = response.get("content", "")
             except (AttributeError, TypeError):
-                # Fall back to a basic approach for older versions
-                logger.warning("Using fallback for retrieval strategy generation")
-                retrieval_strategy = f"Retrieving information for: {task}"
+                # 回退到较旧版本的基本方法
+                logger.warning("为检索策略生成使用回退方法")
+                retrieval_strategy = f"正在为以下任务检索信息: {task}"
                 
-            logger.info(f"Generated retrieval strategy for task: {task}")
+            logger.info(f"已为任务生成检索策略: {task}")
             
-            # Initialize data collection results
+            # 初始化数据收集结果
             retrieved_data = {
                 "sources": [],
                 "records": [],
                 "metadata": {
                     "total_records": 0,
                     "query_time": 0,
-                    "filters_applied": []
+                    "filters_applied": [],
+                    "task": task,
+                    "task_type": "social_media" if is_social_media_task else "general"
                 }
             }
             
-            # Determine which sources to use based on the plan and strategy
-            # Expanded keyword lists to better match different types of tasks
-            web_keywords = ["web", "online", "internet", "website", "news", "article"]
-            social_media_keywords = ["twitter", "social media", "tweet", "facebook", "instagram", 
-                                   "linkedin", "social network", "trending", "viral", "hashtag"]
-            
-            # Combine keywords for web data detection
-            all_web_keywords = web_keywords + social_media_keywords
-            need_web_data = any(keyword in task.lower() for keyword in all_web_keywords)
-            
-            # Special handling for Twitter/social media content
-            is_social_media_task = any(keyword in task.lower() for keyword in social_media_keywords)
-            
-            # Check if database data is needed
-            db_keywords = ["database", "storage", "record", "table", "query", "sql", "dataset"]
-            need_db_data = any(keyword in task.lower() for keyword in db_keywords) and self.data_sources["database"] is not None
-            
-            # Collect web data if needed and if web scraper is available
+            # 确定需要使用的数据源
             web_scraper = self.data_sources.get("web_scraper")
-            if need_web_data and web_scraper:
-                # 首先使用网络搜索功能而不是预设网址
+            db_tool = self.data_sources.get("database")
+            
+            # 检查是否需要从 Web 获取数据
+            if web_scraper:
+                # 构建优化的搜索查询，为不同类型的任务添加关键词
                 search_query = task
                 
-                # Customize search query based on task
-                if "twitter" in task.lower():
-                    search_query = f"twitter trending topics AI {search_query}"
-                elif "facebook" in task.lower():
-                    search_query = f"facebook AI trends {search_query}"
-                elif "social media" in task.lower():
-                    search_query = f"social media AI trends {search_query}"
-                elif "AI" in task or "artificial intelligence" in task.lower():
-                    search_query = f"latest AI research trends {search_query}"
+                # 为不同任务类型增强查询
+                if is_twitter_task:
+                    # 为Twitter任务强化查询
+                    search_terms = ["twitter trending AI topics", "AI hashtags twitter", "popular AI accounts twitter"]
+                    search_query = f"{search_query} {search_terms[0]}"
+                elif is_social_media_task:
+                    # 为一般社交媒体任务增强查询
+                    search_terms = ["social media AI trends", "AI social media analytics", "AI discussions online"]
+                    search_query = f"{search_query} {search_terms[0]}"
+                    
+                if query:
+                    search_query = f"{search_query} {query}"
+                    
+                # 使用 Web 搜索收集信息
+                logger.info(f"执行网络搜索: {search_query}")
                 
-                logger.info(f"Performing web search for: {search_query}")
-                
-                # Use the new search_and_scrape function
+                # 使用 search_and_scrape 函数
                 search_results = web_scraper.search_and_scrape(search_query, max_pages=3)
                 
-                # Process search results
+                # 处理搜索结果
                 if search_results and search_results.get("scraped_data"):
                     scraped_data = search_results.get("scraped_data", [])
-                    logger.info(f"Retrieved data from {len(scraped_data)} websites")
+                    logger.info(f"从 {len(scraped_data)} 个网站检索数据")
                     
-                    # Process each scraped page
+                    # 处理每个抓取的页面
                     for page_data in scraped_data:
-                        # Add the source
+                        # 添加来源
                         retrieved_data["sources"].append({
-                            "name": page_data.get("title", page_data.get("url", "Unknown source")),
+                            "name": page_data.get("title", page_data.get("url", "未知来源")),
                             "type": "web",
                             "url": page_data.get("url", ""),
                             "status": "success"
                         })
                         
-                        # Add content items
+                        # 添加内容项
                         content_items = page_data.get("content", [])
                         for item in content_items:
-                            if item.strip():  # Skip empty content
+                            if item.strip():  # 跳过空内容
                                 retrieved_data["records"].append({
                                     "id": len(retrieved_data["records"]) + 1,
                                     "content": item,
-                                    "source": page_data.get("url", "web search")
+                                    "source": page_data.get("url", "web search"),
+                                    "type": "text"
                                 })
-                                
-                    logger.info(f"Added {len(retrieved_data['records'])} content items from web search")
+                    
+                    logger.info(f"从网络搜索添加了 {len(retrieved_data['records'])} 个内容项")
                 else:
-                    logger.warning("Web search didn't return useful results, trying direct URL approach")
+                    logger.warning("网络搜索未返回有用结果")
                     
-                    # 如果搜索没有结果，回退到直接URL获取方式
-                    # Extract potential URLs from the task or query
-                    import re
-                    url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
-                    urls = re.findall(url_pattern, task + " " + (query or ""))
-                    
-                    # If no URLs found, use appropriate sites based on the task
-                    if not urls:
-                        if is_social_media_task:
-                            if "twitter" in task.lower() or "tweet" in task.lower():
-                                urls = ["https://twitter.com/explore", "https://nitter.net/search?f=tweets&q=AI"]
-                            elif "facebook" in task.lower():
-                                urls = ["https://facebook.com/groups/machinelearning"]
-                            elif "linkedin" in task.lower():
-                                urls = ["https://linkedin.com/feed"]
-                            else:
-                                # General social media and AI news sources
-                                urls = [
-                                    "https://techcrunch.com/category/artificial-intelligence/",
-                                    "https://venturebeat.com/category/ai/",
-                                    "https://reddit.com/r/MachineLearning/"
-                                ]
-                        else:
-                            # Default news/information websites for general tasks
-                            urls = ["https://news.ycombinator.com", "https://techcrunch.com"]
-                    
-                    logger.info(f"Attempting to retrieve data from {len(urls)} URLs")
-                    
-                    # Collect data from each URL
-                    for url in urls[:3]:  # Limit to first 3 URLs to avoid too many requests
-                        try:
-                            logger.info(f"Fetching data from {url}")
-                            html = web_scraper.fetch_page(url)
-                            if html:
-                                soup = web_scraper.parse_html(html)
+                    # 如果第一次搜索失败，尝试使用不同的查询
+                    if is_twitter_task and len(retrieved_data["records"]) == 0:
+                        # 尝试使用替代查询
+                        alternative_queries = [
+                            "twitter AI analytics recent trends",
+                            "AI machine learning trending topics twitter",
+                            "artificial intelligence twitter discussions"
+                        ]
+                        
+                        for alt_query in alternative_queries:
+                            logger.info(f"尝试替代查询: {alt_query}")
+                            alt_results = web_scraper.search_and_scrape(alt_query, max_pages=2)
+                            
+                            if alt_results and alt_results.get("scraped_data"):
+                                scraped_data = alt_results.get("scraped_data", [])
+                                logger.info(f"从替代查询中检索到 {len(scraped_data)} 个数据源")
                                 
-                                # Extract main content (simplified approach)
-                                main_content = web_scraper.extract_text(soup, "p")
-                                
-                                # For social media, also try to extract posts/tweets
-                                if is_social_media_task:
-                                    # Try common social media content containers
-                                    social_content = []
-                                    for selector in [".tweet", ".post", ".status", "[data-testid='tweet']", 
-                                                   ".content", ".message", "[role='article']"]:
-                                        elements = web_scraper.extract_text(soup, selector)
-                                        if elements:
-                                            social_content.extend(elements)
+                                # 处理每个抓取的页面
+                                for page_data in scraped_data:
+                                    # 添加来源
+                                    retrieved_data["sources"].append({
+                                        "name": page_data.get("title", page_data.get("url", "替代查询来源")),
+                                        "type": "web",
+                                        "url": page_data.get("url", ""),
+                                        "status": "success"
+                                    })
                                     
-                                    # If we found social media specific content, add it
-                                    if social_content:
-                                        main_content = social_content + main_content
+                                    # 添加内容项
+                                    content_items = page_data.get("content", [])
+                                    for item in content_items:
+                                        if item.strip():  # 跳过空内容
+                                            retrieved_data["records"].append({
+                                                "id": len(retrieved_data["records"]) + 1,
+                                                "content": item,
+                                                "source": page_data.get("url", f"替代查询: {alt_query}"),
+                                                "type": "text"
+                                            })
                                 
-                                # Add to retrieved data
-                                retrieved_data["sources"].append({
-                                    "name": url,
-                                    "type": "web",
-                                    "url": url,
-                                    "status": "success"
-                                })
-                                
-                                # Add extracted content as records
-                                for paragraph in main_content:
-                                    if paragraph.strip():  # Skip empty paragraphs
-                                        retrieved_data["records"].append({
-                                            "id": len(retrieved_data["records"]) + 1,
-                                            "content": paragraph,
-                                            "source": url
-                                        })
-                                
-                                logger.info(f"Retrieved {len(main_content)} paragraphs from {url}")
-                        except Exception as e:
-                            logger.error(f"Error retrieving data from {url}: {e}")
-                            retrieved_data["sources"].append({
-                                "name": url,
-                                "type": "web",
-                                "url": url,
-                                "status": "error",
-                                "error": str(e)
-                            })
+                                # 如果找到足够的内容项，停止尝试其他替代查询
+                                if len(retrieved_data["records"]) > 10:
+                                    logger.info("从替代查询中找到足够的内容，停止进一步搜索")
+                                    break
             
-            # Collect database data if needed
-            db_tool = self.data_sources.get("database")
+            # 检查是否需要从数据库获取数据
+            # 通过分析任务内容来确定是否需要数据库数据
+            db_keywords = ["database", "storage", "record", "table", "query", "sql", 
+                         "dataset", "数据库", "存储", "记录", "表", "查询"]
+            need_db_data = any(keyword in task.lower() for keyword in db_keywords) and db_tool is not None
+            
             if need_db_data and db_tool:
                 try:
-                    # Get a list of tables
+                    # 获取表列表
                     tables = db_tool.get_table_names()
                     
-                    # For demonstration, query the first table
+                    # 示例：查询第一个表
                     if tables:
                         first_table = tables[0]
                         query_result = db_tool.execute_query(f"SELECT * FROM {first_table} LIMIT 100")
                         
-                        # Add to sources
+                        # 添加来源
                         retrieved_data["sources"].append({
                             "name": "database",
                             "type": "database",
@@ -370,17 +356,18 @@ class RetrieverAgent:
                             "status": "success"
                         })
                         
-                        # Add query results as records
+                        # 添加查询结果作为记录
                         for row in query_result:
                             retrieved_data["records"].append({
                                 "id": len(retrieved_data["records"]) + 1,
                                 "content": str(row),
-                                "source": "database"
+                                "source": "database",
+                                "type": "database_row"
                             })
                             
-                        logger.info(f"Retrieved {len(query_result)} rows from database table {first_table}")
+                        logger.info(f"从数据库表 {first_table} 检索到 {len(query_result)} 行")
                 except Exception as e:
-                    logger.error(f"Error retrieving data from database: {e}")
+                    logger.error(f"从数据库检索数据时出错: {e}")
                     retrieved_data["sources"].append({
                         "name": "database",
                         "type": "database",
@@ -388,102 +375,47 @@ class RetrieverAgent:
                         "error": str(e)
                     })
             
-            # If no data was collected, provide a fallback with task-relevant info
+            # 更新元数据
+            end_time = time.time()
+            retrieved_data["metadata"]["total_records"] = len(retrieved_data["records"])
+            retrieved_data["metadata"]["query_time"] = end_time - start_time
+            
+            # 如果没有收集到任何数据，给出提示
             if not retrieved_data["records"]:
-                logger.warning("No data collected from sources, using fallback data")
-                
-                # Generate task-relevant fallback data that's more realistic
-                if "twitter" in task.lower() or "tweet" in task.lower():
-                    fallback_message = """
-                    Twitter trending AI topics (May 2025):
-                    1. #GPT5release - 25,300 tweets in the past 24 hours discussing OpenAI's latest model
-                    2. #AIregulation - 18,200 tweets about the new EU AI Act implementation
-                    3. #AutoML - 12,700 tweets on automated machine learning frameworks
-                    4. #AIethics - 10,500 tweets discussing responsible AI development
-                    5. #MultimodalLLM - 9,800 tweets about new vision-language models
-                    6. #QuantumML - 7,400 tweets on quantum computing for machine learning
-                    7. #AIhealthcare - 6,900 tweets about medical diagnostic systems
-                    8. #EdgeAI - 5,200 tweets discussing on-device AI processing
-                    9. #SelfSupervisedLearning - 4,800 tweets about advances in training paradigms
-                    10. #AIgenArt - 4,500 tweets featuring AI-generated artwork and discussions
-                    
-                    Key influencers driving these conversations include @AI_Research, @TechFuturist, 
-                    and @EthicalAIadvocate with engagement rates of 3.2%, 2.8%, and 2.5% respectively.
-                    
-                    Sentiment analysis shows 62% positive, 25% neutral, and 13% negative reactions 
-                    to recent AI developments, with concerns primarily focused on job displacement 
-                    and privacy issues.
-                    """
-                elif "social media" in task.lower():
-                    fallback_message = """
-                    AI trending topics across social media platforms (May 2025):
-                    
-                    TWITTER:
-                    - #GPT5release (25,300 mentions)
-                    - #AIregulation (18,200 mentions)
-                    - #AIethics (10,500 mentions)
-                    
-                    REDDIT:
-                    - r/MachineLearning: "GPT-5 Technical Discussion" (8.2k upvotes)
-                    - r/Futurology: "AI in healthcare breakthrough" (12.4k upvotes)
-                    - r/Technology: "EU's new AI regulation impact" (6.7k upvotes)
-                    
-                    LINKEDIN:
-                    - "AI workforce transformation" (35k engagements)
-                    - "Enterprise AI implementation strategies" (28k engagements)
-                    - "Responsible AI frameworks" (22k engagements)
-                    
-                    Cross-platform analysis shows topics gaining traction:
-                    1. Multimodal AI capabilities
-                    2. Edge AI deployment
-                    3. AI governance frameworks
-                    4. Self-supervised learning techniques
-                    5. AI in climate science applications
-                    """
-                elif "AI" in task.lower() or "artificial intelligence" in task.lower():
-                    fallback_message = """
-                    Current AI research and industry trends (May 2025):
-                    
-                    RESEARCH FOCUS AREAS:
-                    - Multimodal foundation models with improved reasoning capabilities
-                    - Efficient transformer architectures reducing computational requirements by 65%
-                    - Self-supervised learning frameworks achieving 92% performance of supervised approaches
-                    - Multi-agent systems for complex problem solving and coordination
-                    - Trustworthy AI focusing on explainability and bias mitigation
-                    
-                    INDUSTRY APPLICATIONS:
-                    - Healthcare: Diagnostic tools achieving 98.3% accuracy across 24 conditions
-                    - Finance: Fraud detection systems reducing false positives by 42%
-                    - Manufacturing: AI quality control reducing defects by 35%
-                    - Education: Personalized learning platforms improving outcomes by 28%
-                    - Climate science: Improved prediction models with 22% higher accuracy
-                    
-                    ETHICAL CONSIDERATIONS:
-                    - Privacy-preserving AI techniques gaining widespread adoption
-                    - Regulatory frameworks being implemented in 18 major markets
-                    - Carbon footprint of AI training reduced by 30% through algorithmic improvements
-                    """
-                else:
-                    fallback_message = f"No specific data could be found for task: {task}"
+                logger.warning("未从来源收集到数据，使用提示")
                 
                 retrieved_data["records"] = [
-                    {"id": 1, "content": fallback_message, "source": "fallback_analysis"}
+                    {
+                        "id": 1, 
+                        "content": "未能为此查询找到特定数据。建议尝试使用不同的搜索词或提供更具体的查询。",
+                        "source": "system",
+                        "type": "message"
+                    }
                 ]
                 retrieved_data["sources"].append({
-                    "name": "fallback_analysis",
-                    "type": "fallback",
+                    "name": "system",
+                    "type": "message",
                     "status": "warning",
-                    "message": "Using synthetic data based on topic analysis"
+                    "message": "数据来源不匹配查询要求"
                 })
             
-            # Update metadata
-            retrieved_data["metadata"]["total_records"] = len(retrieved_data["records"])
+            # 添加用于分析的任务描述
+            if not any(record.get("content") == task for record in retrieved_data["records"]):
+                # 确保原始任务也被包含在记录中，这有助于后续分析
+                retrieved_data["records"].append({
+                    "id": len(retrieved_data["records"]) + 1,
+                    "content": task,
+                    "source": "original_task",
+                    "type": "task_description"
+                })
             
             return retrieved_data
             
         except Exception as e:
-            # Handle any errors
-            logger.error(f"Error in RetrieverAgent.run: {e}")
+            # 处理任何错误
+            logger.error(f"RetrieverAgent.run 中的错误: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 "error": str(e),
                 "status": "error",
