@@ -80,3 +80,8 @@ result = manager.run_task(
 ## License
 
 MIT
+
+
+
+
+nl_ui_agent.py input the NL command and then use ui_use_from_command.py to execute the command.

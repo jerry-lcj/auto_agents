@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "context7-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@smithery/cli@latest",
+        "run",
+        "@upstash/context7-mcp",
+        "--key",
+        "13c09f31-aea6-449e-801b-26fa75825341"
+      ],
+      "host": "localhost",
+      "port": 3000
+    },
+    "local-mcp": {
+      "host": "0.0.0.0",
+      "port": 8000,
+      "internal": true
+    }
+  },
+  "defaultServer": "local-mcp"
+}

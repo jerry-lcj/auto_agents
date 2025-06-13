@@ -58,6 +58,8 @@ class MultiAgentManager:
         enable_mcp: bool = False,
         mcp_host: Optional[str] = None,
         mcp_port: Optional[int] = None,
+        mcp_server_name: Optional[str] = None,
+        mcp_config_path: Optional[str] = None,
     ):
         """
         Initialize the multi-agent system with configuration options.
@@ -68,6 +70,8 @@ class MultiAgentManager:
             enable_mcp: Whether to enable the MCP server (default: False)
             mcp_host: Host for the MCP server (default: from env or 0.0.0.0)
             mcp_port: Port for the MCP server (default: from env or 8000)
+            mcp_server_name: Name of MCP server from config to use (default: None)
+            mcp_config_path: Path to MCP server configuration file (default: None)
         """
         # Load config from file if provided
         self.config = self._load_config(config_path) if config_path else {}
@@ -113,14 +117,26 @@ class MultiAgentManager:
         self.enable_mcp = enable_mcp
         self.mcp_host = mcp_host or os.getenv("MCP_HOST", "0.0.0.0")
         self.mcp_port = mcp_port or int(os.getenv("MCP_PORT", "8000"))
+        self.mcp_server_name = mcp_server_name or os.getenv("MCP_SERVER", None)
+        self.mcp_config_path = mcp_config_path
         self.mcp_server_thread = None
         
         if self.enable_mcp:
-            logger.info(f"Initializing MCP agent on {self.mcp_host}:{self.mcp_port}...")
+            # Check if we're using a named server configuration or direct host/port
+            use_external_server = bool(self.mcp_server_name)
+            
+            if use_external_server:
+                logger.info(f"Initializing MCP agent with configured server '{self.mcp_server_name}'...")
+            else:
+                logger.info(f"Initializing MCP agent on {self.mcp_host}:{self.mcp_port}...")
+                
             self.mcp = MCPAgent(
                 llm_config=self.llm_config,
                 host=self.mcp_host,
-                port=self.mcp_port
+                port=self.mcp_port,
+                server_name=self.mcp_server_name,
+                config_path=self.mcp_config_path,
+                use_external_server=use_external_server
             )
         else:
             self.mcp = None
@@ -155,18 +171,28 @@ class MultiAgentManager:
         
     def _start_mcp_server(self) -> None:
         """Start the MCP server in a separate thread."""
-        def run_server():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.mcp.start_server())
-            
-        self.mcp_server_thread = threading.Thread(
-            target=run_server,
-            daemon=True,
-            name="mcp-server"
-        )
-        self.mcp_server_thread.start()
-        logger.info(f"MCP server started on {self.mcp_host}:{self.mcp_port}")
+        # Check if we're using an external server
+        if hasattr(self.mcp, 'external_server') and self.mcp.external_server:
+            logger.info(f"Using external MCP server '{self.mcp.server_name}'")
+            # Start external server if needed
+            if self.mcp.server_manager.start_external_server(self.mcp.server_name):
+                logger.info(f"External MCP server '{self.mcp.server_name}' started")
+            else:
+                logger.error(f"Failed to start external MCP server '{self.mcp.server_name}'")
+        else:
+            # Start internal server in a separate thread
+            def run_server():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.mcp.start_server())
+                
+            self.mcp_server_thread = threading.Thread(
+                target=run_server,
+                daemon=True,
+                name="mcp-server"
+            )
+            self.mcp_server_thread.start()
+            logger.info(f"Internal MCP server started on {self.mcp_host}:{self.mcp_port}")
         
     def run_task(self, task_description: str, **kwargs) -> Dict[str, Any]:
         """
@@ -279,8 +305,27 @@ class MultiAgentManager:
 
 
 if __name__ == "__main__":
-    # Example usage
-    manager = MultiAgentManager(enable_mcp=True)
+    # Example usage with command line arguments
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Auto Agents Platform")
+    parser.add_argument("--enable-mcp", action="store_true", help="Enable MCP server")
+    parser.add_argument("--mcp-host", type=str, help="MCP server host")
+    parser.add_argument("--mcp-port", type=int, help="MCP server port")
+    parser.add_argument("--mcp-server", type=str, help="MCP server name from config")
+    parser.add_argument("--mcp-config", type=str, help="Path to MCP configuration file")
+    parser.add_argument("--query", type=str, default="What are the trending AI topics on social media?",
+                      help="Query to send to the system")
+    args = parser.parse_args()
+    
+    # Create manager with provided arguments
+    manager = MultiAgentManager(
+        enable_mcp=args.enable_mcp or True,
+        mcp_host=args.mcp_host,
+        mcp_port=args.mcp_port,
+        mcp_server_name=args.mcp_server,
+        mcp_config_path=args.mcp_config
+    )
     
     # Run a regular task
     result = manager.run_task(
@@ -288,15 +333,9 @@ if __name__ == "__main__":
     )
     print("Regular task result:", result)
     
-    # Run a new-style chat task
-    '''chat_result = manager.run_chat_task(
-        "Explain how multi-agent systems can improve data analysis workflows"
-    )
-    print("Chat task result:", chat_result)'''
-    
     # Run an MCP task synchronously
     mcp_result = manager.run_mcp_task_sync(
-        "What are the trending AI topics on social media?",
+        args.query,
         context={"platform": "twitter", "time_range": "last_week"}
     )
     print("MCP task result:", mcp_result)
