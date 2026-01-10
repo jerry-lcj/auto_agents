@@ -1,0 +1,14 @@
+{
+  "seekeasy": {
+    "type": "cli",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@smithery/cli@latest",
+      "run",
+      "@seekeasy/seekeasy",
+      "--key",
+      "13c09f31-aea6-449e-801b-26fa75825341"
+    ]
+  }
+}
